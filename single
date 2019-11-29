@@ -1,0 +1,170 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from multifactors_model_bt.data_processing import merge_data_quarterly, merge_data_monthly, merge_data_technical
+
+
+def analysis(symbol, start_date, end_date):
+    """
+    進行單因子檢定及分析
+    :param symbol:  資料名稱
+    :param start_date:  選取資料起始日期
+    :param end_date:  選取資料結束日期
+    :return:
+    """
+    rolling_time = 20  # 每次回測區間
+    frequency = category(symbol)
+
+    # ------------------ read data ---------------------
+    # 此處讀取 data 要注意是否已經 merge 過 daily data (ex: 漲幅、成交量)，若無則使用data processing的merge file
+
+    close_data = pd.read_csv('basic data/漲幅(%).csv')
+    tx_data = pd.read_excel('data/required/Finance_index.xlsx')['收盤價']
+
+    # change_data = pd.read_csv('merge data/漲幅(%).csv')
+
+    # ---------------------------------------------------
+    # 選取索引值 700 開始的資料
+
+    financial_industry_symbol = check(np.array(np.array(pd.read_excel('data/required/group.xlsx')['group 7'].dropna(), dtype=np.int), dtype=np.str))
+
+    if frequency == 'quarterly':
+        selected_data = merge_data_quarterly(financial_industry_symbol, symbol).rename(columns={'公告日期': '日期'}).iloc[700:]
+
+    elif frequency == 'monthly':
+        selected_data = merge_data_monthly(financial_industry_symbol, symbol).rename(columns={'公告日': '日期'})[700:]
+
+    elif frequency == 'technical':
+        selected_data = merge_data_technical(financial_industry_symbol, symbol)[700:]
+
+    else:
+        pb_data = pd.read_csv('basic data/' + symbol + '.csv')
+        selected_data = pb_data[list(financial_industry_symbol) + ['日期']].iloc[700:]
+
+    selected_date = selected_data['日期']
+    selected_data = selected_data.drop('日期', axis=1)
+    selected_number = int(len(financial_industry_symbol) * 0.25)  # long 組與 short 組的選擇範圍
+
+    diff_list = []
+    diff_short_list = []
+
+    holding_portfolio = 0
+    shorting_portfolio = 0
+
+    # date selection
+
+    start_date_index = np.where(selected_date == start_date)[0][0]
+    end_date_index = np.where(selected_date == end_date)[0][0]
+
+    selected_data = selected_data.iloc[start_date_index: end_date_index]
+    selected_date = selected_date.iloc[start_date_index: end_date_index]
+
+    for i in range(len(selected_data) - rolling_time):
+        if i % rolling_time == 0:
+            # 每隔 rolling time (20 days) 計算一次
+
+            # ----------- date searching ----------
+            input_date = int(selected_date.iloc[i])
+            # print(i, input_date)
+
+            if len(np.where(close_data['日期'] == input_date)[0]) == 0:
+                input_date -= 3
+
+            price_index = np.where(close_data['日期'] == input_date)[0][0]
+            tx_data_temp = tx_data.iloc[price_index:price_index + rolling_time]
+
+            # factor value 排序
+            # short 組
+
+            tail_sort_symbol_list = selected_data.iloc[i].sort_values().dropna().head(selected_number).index
+
+            # long 組
+
+            head_sort_symbol_list = selected_data.iloc[i].sort_values().dropna().tail(selected_number).index
+
+            # 計算 short 與 long 組的滾動區間內 (20 days) 分別收益
+
+            tail_return = np.sum(np.sum(close_data[tail_sort_symbol_list].iloc[price_index:price_index + rolling_time]))/ selected_number
+            head_return = np.sum(np.sum(close_data[head_sort_symbol_list].iloc[price_index:price_index + rolling_time]))/ selected_number
+
+            # ----------- Payoff Capability -----------
+
+            holding_portfolio += head_return
+            shorting_portfolio += tail_return
+
+            # ----------- IR Calculation -----------
+            diff_list.append(head_return - ((tx_data_temp.iloc[-1] - tx_data_temp.iloc[0]) / tx_data_temp.iloc[0]) * 100)
+            diff_short_list.append(tail_return - ((tx_data_temp.iloc[-1] - tx_data_temp.iloc[0]) / tx_data_temp.iloc[0]) * 100)
+
+    annualized_holding = (((1 + np.sum(diff_list)/100) ** (252 / len(selected_data))) - 1) * 100
+    annualized_short = (((1 + np.sum(diff_short_list)/100) ** (252 / len(selected_data))) - 1) * 100
+
+    diff_list.insert(0, 0)
+    diff_short_list.insert(0, 0)
+
+    # 視覺化
+    # plt.plot(np.cumsum(diff_list))
+    # plt.plot(np.cumsum(diff_short_list))
+    # plt.plot(np.cumsum(diff_list) - np.cumsum(diff_short_list), 'r')
+    # plt.legend(('holding', 'short', 'long-short'), loc='upper left')
+    # plt.show()
+
+    ir_hold = annualized_holding / (np.std(diff_list) * ((252 / rolling_time) ** 0.5))
+    ir_short = annualized_short / (np.std(diff_short_list) * ((252 / rolling_time) ** 0.5))
+    capability = (holding_portfolio - shorting_portfolio) / holding_portfolio
+
+    # print('hold:', np.mean(diff_list), 'short:', np.mean(diff_short_list))
+    # print('hold std:', np.std(diff_list), 'short std:', np.std(diff_short_list))
+    # print('IR holding:', annualized_holding / (np.std(diff_list) * ((252 / rolling_time) ** 0.5)))
+    # print('IR short:', annualized_short / (np.std(diff_short_list) * ((252 / rolling_time) ** 0.5)))
+    # print('Capability:', (holding_portfolio - shorting_portfolio) / holding_portfolio)
+
+    return ir_hold, ir_short, capability
+
+
+def check(symbol_list):
+    """
+    確定金融股是否有歷史資料，沒有則剔除
+    :param symbol_list:  分完群後的股票代號陣列
+    :return:
+    """
+
+    close_data = pd.read_csv('basic data/收盤價.csv')
+    raw_data_symbol_list = np.array(close_data.columns)
+    delete_list = []
+
+    for index in range(len(symbol_list)):
+        if str(symbol_list[index]) in raw_data_symbol_list:
+            pass
+
+        else:
+            delete_list.append(index)
+
+    return np.delete(symbol_list, delete_list)
+
+
+def category(symbol):
+    """
+    對應每個 factor 到其所屬的資料頻率
+    :param symbol:  factor 代號
+    :return:
+    """
+
+    hide = pd.read_json('_hide.json')['Finance_single_factor']
+
+    if symbol in hide['daily']:
+        return 'daily'
+
+    elif symbol in hide['monthly']:
+        return 'monthly'
+
+    elif symbol in hide['technical']:
+        return 'technical'
+
+    else:
+        return 'quarterly'
+
+
+if __name__ == '__main__':
+    category('速動比率(%)')
+    #analysis('quarterly', '速動比率(%)')
