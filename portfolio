@@ -1,0 +1,486 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from multifactors_model_bt.data_processing import merge_data_quarterly, merge_data_monthly, merge_data_technical
+from multifactors_model_bt.single_factor_analysis import analysis
+
+
+def merge_data():
+    """
+    合併 portfolio backtesting 所需資料
+    :return:
+    """
+    # ------------ price data ----------------
+
+    financial_industry_symbol = check(
+        np.array(np.array(pd.read_excel('data/required/group.xlsx')['group 7'].dropna(), dtype=np.int), dtype=np.str))
+
+    config = pd.read_json('config.json')['Finance_bt']
+    all_symbols_list = config['merge data symbol list']
+
+    _config = pd.read_json('_hide.json')['Finance_single_factor']
+
+    for symbol in all_symbols_list:
+        print('now is ' + symbol)
+
+        if symbol in _config['daily']:
+            raw_data = pd.read_csv('merge data/' + symbol + '.csv')
+            selected_data = raw_data[list(financial_industry_symbol) + ['日期']]
+
+        elif symbol in _config['monthly']:
+            selected_data = merge_data_monthly(financial_industry_symbol, symbol).rename(columns={'公告日': '日期'})
+
+        elif symbol in _config['technical']:
+            selected_data = merge_data_technical(financial_industry_symbol, symbol)
+
+        else:
+            selected_data = merge_data_quarterly(financial_industry_symbol, symbol).rename(columns={'公告日期': '日期'})
+
+        selected_data.to_csv('backtesting_data/' + symbol + '.csv', index=False)
+
+
+def portfolio_bt(data_save):
+    """
+        回測主程式
+        :param data_save:  如有新因子或是因子挑選規則改變則需重新合併資料
+        :return:
+    """
+    rolling_time = 20
+    selected_number = 5
+    extracting_period = 700
+    analysis_period = 500
+
+    # ------------ price data ----------------
+    close_data = pd.read_csv('basic data/漲幅(%).csv').iloc[extracting_period:]
+    tx_data = pd.read_excel('data/required/Finance_index.xlsx')['收盤價'].iloc[extracting_period:]
+
+    financial_industry_symbol = check(np.array(np.array(pd.read_excel('data/required/group.xlsx')['group 7'].dropna(), dtype=np.int), dtype=np.str))
+    config = pd.read_json('config.json')['Finance_bt']
+    all_symbols_list = config['merge data symbol list']
+
+    # ---------------------------------------------------
+
+    if data_save == 'True':
+        merge_data()
+
+    else:
+
+        symbols_value_list ={}
+        long_stock_list = []
+        short_stock_list = []
+        date_list = []
+
+        return_long_list = []
+        return_short_list = []
+        return_date_list = []
+
+        # ------------- 合併所需資料 --------------
+        print('-------------- All F actors --------------')
+        for symbol in all_symbols_list:
+            print(symbol)
+            temp_data = pd.read_csv('backtesting_data/' + symbol + '.csv').iloc[extracting_period:]
+            symbols_value_list[symbol] = temp_data
+
+        # ------------------------ factors calculation ---------------------------
+        if data_save == "True":
+            get_factors(all_symbols_list, close_data, analysis_period, rolling_time)
+
+        # ------------------------------------------------------------------------
+
+        long_symbols = np.load('backtesting_data/backtesting_factors set/long_symbol.npy')
+        short_symbols = np.load('backtesting_data/backtesting_factors set/short_symbol.npy')
+
+        for i in range(len(close_data) - analysis_period):
+            start_date = str(int(close_data.iloc[i]['日期']))
+            end_date = str(int(close_data.iloc[i + analysis_period]['日期']))
+
+            score_dict = {}
+            count_dict = {}
+
+            if i % rolling_time == 0:
+                print('From', start_date, 'to', end_date)
+
+                temp_long_symbol_list = long_symbols[int(i/rolling_time)]
+                # temp_short_symbol_list = short_symbols[i]
+                date_list.append(close_data['日期'].iloc[i])
+
+                for temp_long_symbol in temp_long_symbol_list:
+                    index = np.where(symbols_value_list[temp_long_symbol]['日期'] == close_data['日期'].iloc[i])[0]
+
+                    symbol_list = []
+                    value_list = []
+
+                    for industry_symbol_index in range(len(financial_industry_symbol)):
+                        symbol_list.append((financial_industry_symbol[industry_symbol_index]))
+                        value_list.append(symbols_value_list[temp_long_symbol][financial_industry_symbol[industry_symbol_index]].iloc[index[0]])
+
+                    temp_score = get_score('p', temp_long_symbol, symbol_list, value_list)
+
+                    if temp_score:
+                        for key in temp_score.keys():
+                            if key in score_dict.keys():
+                                score_dict[key] += temp_score[key]
+                                count_dict[key] += 1
+
+                            else:
+                                score_dict[key] = temp_score[key]
+                                count_dict[key] = 1
+
+                long_stock_list.append(stocks_selection(score_dict, count_dict, selected_number))
+
+        # ------------------------------ negative symbols -----------------------------------
+
+        for i in range(len(close_data) - analysis_period):
+            score_dict = {}
+            count_dict = {}
+
+            if i % rolling_time == 0:
+                temp_short_symbol_list = short_symbols[int(i / rolling_time)]
+
+                for temp_short_symbol in temp_short_symbol_list:
+                    index = np.where(symbols_value_list[temp_short_symbol]['日期'] == close_data['日期'].iloc[i])[0]
+
+                    symbol_list = []
+                    value_list = []
+
+                    for industry_symbol_index in range(len(financial_industry_symbol)):
+                        symbol_list.append((financial_industry_symbol[industry_symbol_index]))
+                        value_list.append(symbols_value_list[temp_short_symbol][financial_industry_symbol[industry_symbol_index]].iloc[index[0]])
+
+                    temp_score = get_score('n', temp_short_symbol, symbol_list, value_list)
+
+                    if temp_score:
+                        for key in temp_score.keys():
+                            if key in score_dict.keys():
+                                score_dict[key] += temp_score[key]
+                                count_dict[key] += 1
+
+                            else:
+                                score_dict[key] = temp_score[key]
+                                count_dict[key] = 1
+
+                short_stock_list.append(stocks_selection(score_dict, count_dict, -selected_number))
+
+        # -------------------- backtesting code -----------------------
+
+        # --------------------- finance index performance -------------
+        date = close_data['日期']
+
+        start_date_index = np.where(date == date_list[0])[0][0]
+        end_date_inedx = np.where(date == date_list[-1])[0][0]
+
+        tx_data_array = np.array(tx_data.iloc[start_date_index:end_date_inedx])
+        tx_pnl_array = ((tx_data_array - tx_data_array[0]) / tx_data_array[0]) * 100
+
+        # -------------------- portfolio performance ------------------
+
+        total_pnl_array = np.array([])
+        total_pnl_short_array_commission = np.array([])
+        total_pnl_short_array = np.array([])
+        total_pnl = 0
+        total_pnl_short = 0
+        total_pnl_short_commission = 0
+        last_long_stock_list = []
+        last_short_stock_list = []
+
+        for date_index in range(len(date_list) - 1):
+
+            now = date_list[date_index]
+            Next = date_list[date_index + 1]
+            now_long_stock_list = long_stock_list[date_index]
+            now_short_stock_list = short_stock_list[date_index]
+
+            now_date_index = np.where(date == now)[0][0]      # find close data
+            next_date_index = np.where(date == Next)[0][0]
+
+            print(now_long_stock_list, now_short_stock_list)
+            temp_long = return_name(now_long_stock_list)
+            return_long_list.append(temp_long)
+
+            temp_short = return_name(now_short_stock_list)
+            return_short_list.append(temp_short)
+
+            return_date_list.append(date_list[date_index])
+            temp_pnl = 0
+            temp_pnl_short = 0
+            temp_pnl_short_commission = 0
+
+            for now_long_stock_symbol in now_long_stock_list:
+                temp_price = np.nan_to_num(np.array(close_data[now_long_stock_symbol].iloc[now_date_index: next_date_index]))
+                accumulative_percentage_array = np.cumsum(temp_price)
+                temp_pnl += accumulative_percentage_array
+
+            for now_short_stock_symbol in now_short_stock_list:
+                temp_price = np.nan_to_num(np.array(close_data[now_short_stock_symbol].iloc[now_date_index: next_date_index]))
+                accumulative_percentage_array = np.cumsum(temp_price)
+                temp_pnl_short += accumulative_percentage_array
+                temp_pnl_short_commission += accumulative_percentage_array
+
+            # --------- commission and spread -----------
+
+            turn_number_long = len(last_long_stock_list) - len([x for x in now_long_stock_list if x in last_long_stock_list])
+            turn_number_short = len(last_short_stock_list) - len([x for x in now_short_stock_list if x in last_short_stock_list])
+
+            temp_pnl -= turn_number_long * 0.7
+            temp_pnl_short += turn_number_short * 0.7
+            temp_pnl_short_commission -= turn_number_short * 0.7
+            temp_pnl /= len(now_long_stock_list)
+            temp_pnl_short /= len(now_short_stock_list)
+            temp_pnl_short_commission /= len(now_short_stock_list)
+
+            total_pnl_array = np.append(total_pnl_array, temp_pnl+total_pnl)
+            total_pnl_short_array = np.append(total_pnl_short_array, temp_pnl_short+total_pnl_short)
+            total_pnl_short_array_commission = np.append(total_pnl_short_array_commission, temp_pnl_short_commission+total_pnl_short_commission)
+
+            total_pnl_short = total_pnl_short_array[-1]
+            total_pnl = total_pnl_array[-1]
+            total_pnl_short_commission = total_pnl_short_array_commission[-1]
+
+            last_long_stock_list = now_long_stock_list
+            last_short_stock_list = now_short_stock_list
+
+        long_list_pd = pd.DataFrame(np.array(return_long_list))  # .to_csv('long_list.csv', index=False)
+        short_list_pd = pd.DataFrame(np.array(return_short_list))  # .to_csv('short_list.csv', index=False)
+        date_list_pd = pd.DataFrame(np.array(return_date_list))  # .to_csv('date_list.csv', index=False)
+
+        pd.concat([date_list_pd, long_list_pd, short_list_pd], axis=1).to_csv('trade_detail.csv', index=False)
+
+        print('long portfolio')
+        performance_indicators(total_pnl_array)
+
+        print('short portfolio')
+        performance_indicators(total_pnl_short_array_commission)
+
+        print('finance index')
+        performance_indicators(tx_pnl_array)
+
+        print('long short portfolio')
+        performance_indicators(total_pnl_array - total_pnl_short_array)
+
+        plt.plot(total_pnl_array, color='r', label='Long')
+        plt.plot(total_pnl_short_array_commission, color='b', label='Short')
+        plt.plot(tx_pnl_array, color='g', label='Index')
+        plt.plot(total_pnl_array - total_pnl_short_array, color='y', label='Long Short')
+        plt.legend(loc='upper left')
+        plt.show()
+
+
+def get_score(direction, symbol, symbol_list, value_list):
+    """
+    進行權重配置 (暫不使用) default 所有因子權重為 1
+    :param direction:
+    :param symbol:
+    :param symbol_list:
+    :param value_list:
+    :return:
+    """
+    score_dict = {}
+
+    if len(np.array(value_list)[np.isnan(value_list)]) > 0.5 * len(value_list):
+        pass
+
+    else:
+        # first step: remove Nan index
+        delete_index = np.argwhere(np.isnan(value_list)).reshape(1, len(np.argwhere(np.isnan(value_list))))[0]
+        symbol_list = np.delete(symbol_list, delete_index)
+        value_list = np.delete(value_list, delete_index)
+
+        # second step: calculate score
+        sort_index = np.argsort(value_list)
+        negative_symbols_list = ['每股綜合盈餘(元)', '淨值成長率(%)', '營收成長率(%)', '營業利益季變動率(%)', '稅前純益季變動率(%)', ]
+
+        if direction == 'n':
+            if symbol == '淨值成長率(%)':
+                multiple = 0.186
+
+            elif symbol == '每股綜合盈餘(元)':
+                multiple = 0.241
+
+            elif symbol == '營收成長率(%)':
+                multiple = 0.1743
+
+            elif symbol == '營業利益季變動率(%)':
+                multiple = 0.188
+
+            elif symbol == '稅前純益季變動率(%)':
+                multiple = 0.208
+
+        elif direction == 'p':
+            if symbol == '稅前純益佔實收資本比率(%)':
+                multiple = 0.1732
+
+            elif symbol == '每股綜合盈餘(元)':
+                multiple = 0.384
+
+            elif symbol == '淨值成長率(%)':
+                multiple = 0.282
+            elif symbol == '累計合併營收成長(%)':
+                multiple = 0.001
+
+            elif symbol == '稅後純益成長率(%)':
+                multiple = 0.159
+
+        multiple = 1
+        reverse_symbol = ['test']
+        if symbol in reverse_symbol:
+            for i in range(len(sort_index)):
+                if 0 <= i <= int(0.25 * len(sort_index)):
+                    score_dict[symbol_list[sort_index[i]]] = 100 * multiple
+
+                elif int(0.25 * len(sort_index)) < i <= int(0.5 * len(sort_index)):
+                    score_dict[symbol_list[sort_index[i]]] = 75 * multiple
+
+                elif int(0.5 * len(sort_index)) < i <= int(0.75 * len(sort_index)):
+                    score_dict[symbol_list[sort_index[i]]] = 50 * multiple
+
+                elif int(0.75 * len(sort_index)) < i:
+                    score_dict[symbol_list[sort_index[i]]] = 25 * multiple
+
+            return score_dict
+
+        else:
+            for i in range(len(sort_index)):
+                if 0 <= i <= int(0.25 * len(sort_index)):
+                    score_dict[symbol_list[sort_index[i]]] = 25 * multiple
+
+                elif int(0.25 * len(sort_index)) < i <= int(0.5 * len(sort_index)):
+                    score_dict[symbol_list[sort_index[i]]] = 50 * multiple
+
+                elif int(0.5 * len(sort_index)) < i <= int(0.75 * len(sort_index)):
+                    score_dict[symbol_list[sort_index[i]]] = 75 * multiple
+
+                elif int(0.75 * len(sort_index)) < i:
+                    score_dict[symbol_list[sort_index[i]]] = 100 * multiple
+
+            return score_dict
+
+
+def performance_indicators(return_array):
+    """
+    計算 回報率、最大回撤、標準差
+    :param return_array:
+    :return:
+    """
+    temp_max = 0
+    max_drawdown = 0
+
+    for i in return_array:
+        if i >= temp_max:
+            temp_max = i
+
+        else:
+            temp_max_drawdown = temp_max - i
+
+            if temp_max_drawdown > max_drawdown:
+                max_drawdown = temp_max_drawdown
+
+    print('return:', round(return_array[-1], 2), 'max drawdown:', round(max_drawdown, 2), 'std:', round(np.std(return_array), 2))
+
+
+def return_name(stocks_array):
+    """
+    對應股票代號與名稱
+    :param stocks_array:
+    :return:
+    """
+    stocks_name_list = pd.read_excel('data/required/stocks_symbol.xlsx')
+    code_array = np.array(stocks_name_list['股票代號'], dtype=np.str)
+
+    return_list = []
+    for stock in stocks_array:
+        code_index = np.where(code_array == stock)[0][0]
+        return_list.append(code_array[code_index])
+
+    return return_list
+
+
+def check(symbol_list):
+    """
+    確定金融股是否有歷史資料，沒有則剔除
+    :param symbol_list:  分完群後的股票代號陣列
+    :return:
+    """
+
+    close_data = pd.read_csv('basic data/收盤價.csv')
+    raw_data_symbol_list = np.array(close_data.columns)
+    delete_list = []
+
+    for index in range(len(symbol_list)):
+        if str(symbol_list[index]) in raw_data_symbol_list:
+            pass
+
+        else:
+            delete_list.append(index)
+
+    return np.delete(symbol_list, delete_list)
+
+
+def stocks_selection(score_dict, count_dict, selected_number):
+    """
+    計算股票得分
+    :param score_dict:
+    :param count_dict:
+    :param selected_number:
+    :return:
+    """
+    # at least 3 factors
+    # check count
+
+    key_array = np.array(list(score_dict.keys()))
+    score_array = np.array(list(score_dict.values()))
+    count_array = np.array(list(count_dict.values()))
+
+    if selected_number > 0:
+        rank_order_index = np.argsort(score_array / count_array)[-selected_number:]
+
+    elif selected_number < 0:
+        rank_order_index = np.argsort(score_array / count_array)[0:-selected_number]
+
+    else:
+        print('Zero is not available')
+        rank_order_index = None
+
+    return key_array[rank_order_index]
+
+
+def get_factors(all_symbol_list, close_data, analysis_period, analysis_rolling_time):
+    """
+    獲取每段時間內的 IR、Capability 狀況
+    :param all_symbol_list: from config.json
+    :param close_data:
+    :param analysis_period:  分析的時間段 default = 500 days
+    :param analysis_rolling_time:  回測的滾動參數 default = 20 days
+    :return:
+    """
+    long_symbol_np = []
+    short_symbol_np = []
+
+    for i in range(len(close_data) - analysis_period):
+        if i % analysis_rolling_time == 0:
+            start_date = str(int(close_data.iloc[0]['日期']))
+            end_date = str(int(close_data.iloc[i + analysis_period]['日期']))
+            print(start_date, end_date)
+
+            long_symbol_temp = []
+            short_symbol_temp = []
+
+            for symbol in all_symbol_list:
+                # print(symbol)
+                ir_hold, ir_short, capability = analysis(symbol, start_date, end_date)
+                # print(ir_hold, ir_short, capability)
+                if ir_short <= -1 and capability >= 0.4:
+                    short_symbol_temp.append(symbol)
+
+                if ir_hold >= 0.5 and capability >= 0.4:
+                    long_symbol_temp.append(symbol)
+
+            print(long_symbol_temp, short_symbol_temp)
+            long_symbol_np.append(np.array(long_symbol_temp))
+            short_symbol_np.append(np.array(short_symbol_temp))
+
+    np.save('backtesting_data/backtesting_factors set/long_symbol', np.array(long_symbol_np))
+    np.save('backtesting_data/backtesting_factors set/short_symbol', np.array(short_symbol_np))
+
+
+if __name__ == '__main__':
+    portfolio_bt(None)
