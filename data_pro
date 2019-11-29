@@ -1,0 +1,114 @@
+import numpy as np
+import pandas as pd
+import os
+
+
+def read_file_name(path):
+    """ Find the symbol and path of stocks"""
+
+    stock_symbol_list = []
+    stock_dir_name_list = os.listdir(path)
+
+    for dir_name in stock_dir_name_list:
+        stock_symbol_list.append(dir_name.split('.')[0])
+
+    return stock_symbol_list, stock_dir_name_list
+
+
+def merge_basic_data(merge_symbol_list):
+    """
+    處理原始 daily data 資料 ex: 收盤價 股票名稱.......
+    :return:
+    """
+    path = r'data/daily20190708/'
+
+    stock_symbol_list, stock_dir_name_list = read_file_name(path)
+    columns_list = merge_symbol_list  # ['總市值(億)', '股票名稱', '收盤價']
+
+    for column_name in columns_list:
+        merge_data = pd.read_excel(path + '/' + stock_dir_name_list[0])[['日期', column_name]].rename(columns={column_name:stock_symbol_list[0]})
+        print(str(path + '/' + stock_dir_name_list[0]))
+
+        for index in range(len(stock_dir_name_list)):
+            stock_dir_name = stock_dir_name_list[index]
+
+            if stock_dir_name == stock_dir_name_list[0]:
+                continue
+
+            print('now is ', stock_dir_name)
+            temp_data = pd.read_excel(path + '/' + stock_dir_name)[['日期', column_name]].rename(columns={column_name:stock_symbol_list[index]})
+            merge_data = pd.merge(merge_data, temp_data, on='日期', how='outer')
+
+        merge_data = merge_data.fillna(method='ffill')
+        merge_data.to_csv('basic data/' + column_name + '.csv', index=False)
+
+
+def merge_data_quarterly(stock_symbol_list, symbol):
+    path = r'data/quarterly'
+    merge_data = pd.read_csv('basic data/收盤價.csv')[['日期', '1101']].rename(columns={'日期': '公告日期', '1101': 'price'})
+    merge_data['公告日期'] = merge_data['公告日期'].astype(int).astype(str)
+
+    # stock_symbol_list, stock_dir_name_list = read_file_name(path)
+
+    columns_list = [symbol]  # ['總市值(億)', '股票名稱', '收盤價']
+
+    for column_name in columns_list:
+        for index in range(len(stock_symbol_list)):
+
+            temp_data = pd.read_excel(path + '/' + stock_symbol_list[index] + '.xlsm')[['公告日期', column_name]].rename(columns={column_name: stock_symbol_list[index]}).dropna()
+            temp_data['公告日期'] = temp_data['公告日期'].astype(int).astype(str)
+            merge_data = pd.merge(merge_data, temp_data, on='公告日期', how='outer').fillna(method='ffill')
+
+    return merge_data.drop('price', axis=1)
+
+
+def merge_data_monthly(stock_symbol_list, symbol):
+    path = r'data/monthly'
+    merge_data = pd.read_csv('basic data/收盤價.csv')[['日期', '1101']].rename(columns={'日期': '公告日', '1101': 'price'})
+    merge_data['公告日'] = merge_data['公告日'].astype(int).astype(str)
+
+    columns_list = [symbol]
+
+    for column_name in columns_list:
+        for index in range(len(stock_symbol_list)):
+
+            temp_data = pd.read_excel(path + '/' + stock_symbol_list[index] + '.xlsm')[['公告日', column_name]].rename(columns={column_name: stock_symbol_list[index]}).dropna()
+            temp_data['公告日'] = temp_data['公告日'].astype(int).astype(str)
+            merge_data = pd.merge(merge_data, temp_data, on='公告日', how='outer').fillna(method='ffill')
+
+    return merge_data.drop('price', axis=1)
+
+
+def merge_data_technical(stock_symbol_list, symbol):
+    stock_symbol_list = list(stock_symbol_list)
+    print(stock_symbol_list)
+
+    merge_data = pd.read_csv('basic data/收盤價.csv')
+    merge_data['日期'] = merge_data['日期'].astype(int).astype(str)
+
+    if symbol == 'MA20':
+        rolling_number = 30
+        merge_array = [np.array(merge_data['日期'])]
+
+        for stock_symbol in stock_symbol_list:
+            now_price = np.array(merge_data[stock_symbol])
+            ma = np.array(merge_data[stock_symbol].rolling(rolling_number).mean())
+            merge_array.append((now_price - ma) / ma)
+
+        return pd.DataFrame(np.array(merge_array).T, columns=['日期'] + stock_symbol_list)
+
+    elif symbol == 'hl_diff_20':
+        rolling_number = 20
+        merge_array = [np.array(merge_data['日期'])]
+
+        for stock_symbol in stock_symbol_list:
+            temp_max = np.array(merge_data[stock_symbol].rolling(rolling_number).max())
+            temp_min = np.array(merge_data[stock_symbol].rolling(rolling_number).min())
+            merge_array.append((temp_max - temp_min) / temp_min)
+
+        return pd.DataFrame(np.array(merge_array).T, columns=['日期'] + stock_symbol_list)
+
+
+if __name__ == '__main__':
+    print(merge_data_technical(np.array(['2882', '2891']), 'MA20'))
+    #print(pd.read_csv('finance_industry/淨值成長率(%).csv'))
