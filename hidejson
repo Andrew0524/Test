@@ -1,0 +1,7 @@
+{
+  "Finance_single_factor": {
+                "technical": ["MA20", "hl_diff_20"],
+                "monthly": ["累計合併營收成長(%)"],
+                "daily": ["漲幅(%)", "總市值(億)", "股票名稱", "收盤價"]
+            }
+}
