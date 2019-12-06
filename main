@@ -1,0 +1,23 @@
+import numpy as np
+import pandas as pd
+from multifactors_model_bt.data_processing import merge_basic_data
+from multifactors_model_bt.single_factor_analysis import analysis
+
+
+def main():
+    config = pd.read_json('config.json')['Finance_sf']
+    merge_data_symbol_list = config['merge data symbol list']
+
+    # first step: 合併基本數據 ex: 收盤價、漲幅、成交量
+    # 合併項目由 config 中更改
+
+    # merge_basic_data(merge_data_symbol_list)
+
+    if config['backtesting type'] == 's_f':
+        # single factor analysis
+
+        analysis(config['s_f factor'], '20130107', '20190628')
+
+
+if __name__ == '__main__':
+    main()
